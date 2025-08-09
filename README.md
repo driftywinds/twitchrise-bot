@@ -7,6 +7,11 @@ Twitchrise uses an ```.env``` to define variables and is only catered for a sing
 - Add channel to monitor (```/add <channelname>```)
 - Remove channels to monitor (```/remove <channelname>```)
 - List all the channels they have added to monitor (```/list```)
+- Add additional Apprise endpoints (```/setapprise <URL>```)
+- Remove added Apprise endpoints (```/rmapprise <number>```)
+- List added Apprise endpoints (```/listapprise```)
+
+Apprise endpoints and their formats can be seen [here](https://github.com/caronc/apprise#supported-notifications).
 
 The bot admin can define the interval in seconds the bot will poll Twitch to check if the channels are live or not in the ```.env``` file. Although this restricts the usage of Twitchrise primarily through Telegram, I am a fan of Telegram and use it in my workflow extensively enough to warrant this usecase. 
 
