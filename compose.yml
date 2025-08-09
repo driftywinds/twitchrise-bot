@@ -1,0 +1,11 @@
+version: "3.8"
+
+services:
+  twitchrise-bot:
+    image: ghcr.io/driftywinds/twitchrise-bot:latest
+    container_name: twitchrise-bot
+    volumes:
+      - ./watchlists.json:/app/watchlists.json
+      - ./.env:/app/.env:ro
+    restart: unless-stopped
+    tty: true
