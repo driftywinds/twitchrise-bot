@@ -2,7 +2,7 @@
 
 This is a narrowed down version of my other general use project [Twitchrise](https://github.com/driftywinds/twitchrise) for the express use as an interactive bot on Telegram.
 
-This project iams to make one bot for multiple users, where Twitchrise uses an ```.env``` to define variables and is only catered for a single user running the script for themselves. Running one instance of this bot multiple users can: -
+This project aims to make one bot for multiple users, where Twitchrise uses an ```.env``` to define variables and is only catered for a single user running the script for themselves. Running one instance of this bot multiple users can: -
 
 - Add channel to monitor (```/add <channelname>```)
 - Remove channels to monitor (```/remove <channelname>```)
