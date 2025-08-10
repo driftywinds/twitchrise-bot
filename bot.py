@@ -166,8 +166,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Use /setapprise <url> to add extra notification targets.\n"
         "Use /rmapprise <number> to remove already added notification targets.\n"
         "Use /listapprise to list all added notification targets.\n\n"
-        "You can see the supported URLs and their formats here - https://github.com/caronc/apprise#supported-notifications. \n\n"
-        "Please remember that these will work in addition to Telegram, you will alwyas receive updates in this chat irrespective of if you add more targets or not."
+        "You can see the supported URLs for notification targets like Discord, Gotify etc. and their formats here - https://github.com/caronc/apprise#supported-notifications. \n\n"
+        "Please remember that these will work in addition to Telegram, you will always receive updates in this chat irrespective of if you add more targets or not."
     )
 
 async def add_channel(update: Update, context: ContextTypes.DEFAULT_TYPE):
