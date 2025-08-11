@@ -13,15 +13,9 @@ on:
         description: "Docker Hub username (if pushing there)"
         required: false
       registries_to_push:
-        type: choice
-        description: "Select registries to push to"
-        options:
-          - dockerhub
-          - ghcr
-          - quay
-        required: false
-        default: []
-        multiple: true  # allows checkbox-like UI
+        description: "Registries to push to (comma or space separated: dockerhub, ghcr, quay)"
+        required: true
+        default: "dockerhub, ghcr"
 
 jobs:
   build-and-push:
@@ -42,37 +36,40 @@ jobs:
           TAGS_INPUT: ${{ github.event.inputs.tags }}
           IMAGE_NAME: ${{ github.event.inputs.image_name }}
           DOCKERHUB_USER: ${{ github.event.inputs.dockerhub_user }}
-          REGISTRIES: ${{ github.event.inputs.registries_to_push }}
+          REGISTRIES_INPUT: ${{ github.event.inputs.registries_to_push }}
           GITHUB_REPOSITORY_OWNER: ${{ github.repository_owner }}
         run: |
           set -eu
           TAGS_INPUT=$(echo "${TAGS_INPUT:-}" | tr ',' ' ')
+          REGISTRIES=$(echo "${REGISTRIES_INPUT:-}" | tr ',' ' ')
 
           TAG_ARGS=""
           PRINT_LIST=""
 
           for TAG in $TAGS_INPUT; do
-            if [[ "${REGISTRIES}" == *"dockerhub"* ]]; then
-              if [ -n "${DOCKERHUB_USER}" ]; then
-                FULL_TAG="docker.io/${DOCKERHUB_USER}/${IMAGE_NAME}:$TAG"
-              else
-                FULL_TAG="docker.io/${IMAGE_NAME}:$TAG"
-              fi
+            for REG in $REGISTRIES; do
+              case "$REG" in
+                dockerhub)
+                  if [ -n "${DOCKERHUB_USER}" ]; then
+                    FULL_TAG="docker.io/${DOCKERHUB_USER}/${IMAGE_NAME}:$TAG"
+                  else
+                    FULL_TAG="docker.io/${IMAGE_NAME}:$TAG"
+                  fi
+                  ;;
+                ghcr)
+                  FULL_TAG="ghcr.io/${GITHUB_REPOSITORY_OWNER}/${IMAGE_NAME}:$TAG"
+                  ;;
+                quay)
+                  FULL_TAG="quay.io/${IMAGE_NAME}:$TAG"
+                  ;;
+                *)
+                  echo "Unknown registry: $REG"
+                  exit 1
+                  ;;
+              esac
               TAG_ARGS="${TAG_ARGS} --tag ${FULL_TAG}"
               PRINT_LIST="${PRINT_LIST}${FULL_TAG} "
-            fi
-
-            if [[ "${REGISTRIES}" == *"ghcr"* ]]; then
-              FULL_TAG="ghcr.io/${GITHUB_REPOSITORY_OWNER}/${IMAGE_NAME}:$TAG"
-              TAG_ARGS="${TAG_ARGS} --tag ${FULL_TAG}"
-              PRINT_LIST="${PRINT_LIST}${FULL_TAG} "
-            fi
-
-            if [[ "${REGISTRIES}" == *"quay"* ]]; then
-              FULL_TAG="quay.io/${IMAGE_NAME}:$TAG"
-              TAG_ARGS="${TAG_ARGS} --tag ${FULL_TAG}"
-              PRINT_LIST="${PRINT_LIST}${FULL_TAG} "
-            fi
+            done
           done
 
           echo "tags=${TAG_ARGS}" >> "$GITHUB_OUTPUT"
