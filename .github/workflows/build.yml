@@ -30,6 +30,7 @@ on:
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
+
     steps:
     - name: Checkout repository
       uses: actions/checkout@v3
@@ -64,90 +65,65 @@ jobs:
     - name: Prepare tags
       id: prepare_tags
       run: |
-        I="${{ inputs.image_name }}"
-        # Remove spaces from tags and split by comma
+        echo "IMAGE_NAME=${{ inputs.image_name }}" >> $GITHUB_ENV
+        # Normalize tags: remove spaces and split by comma
         TAGS_RAW="${{ inputs.tags }}"
-        TAGS=$(echo $TAGS_RAW | tr -d ' ' | tr ',' '\n')
-        echo "image_name=$I" >> $GITHUB_OUTPUT
-        echo "tags=$TAGS_RAW" >> $GITHUB_OUTPUT
-        echo "::set-output name=tags_list::$TAGS_RAW"
-        echo "tag_array<<EOF" >> $GITHUB_OUTPUT
-        echo "$TAGS" >> $GITHUB_OUTPUT
-        echo "EOF" >> $GITHUB_OUTPUT
+        TAGS=$(echo "$TAGS_RAW" | tr -d ' ' | tr ',' '\n')
+        echo "TAGS=$TAGS_RAW" >> $GITHUB_ENV
+        echo "TAGS_LIST<<EOF" >> $GITHUB_ENV
+        echo "$TAGS" >> $GITHUB_ENV
+        echo "EOF" >> $GITHUB_ENV
 
-    - name: Build Docker image (multi-arch)
-      id: build_image
-      run: |
-        set -e
-        image_name="${{ inputs.image_name }}"
-        tags_raw="${{ inputs.tags }}"
-        tags=$(echo $tags_raw | tr -d ' ' | tr ',' ' ')
-        
-        # Build with all tags on local docker cache (no push)
-        # Use buildx to build for linux/amd64,linux/arm64
-        docker buildx build \
-          --platform linux/amd64,linux/arm64 \
-          --load \
-          $(for t in $tags; do echo "-t $image_name:$t "; done) \
-          .
-      shell: bash
-
-    - name: Push to Docker Hub
+    - name: Build & push to Docker Hub
       if: ${{ inputs.push_dockerhub == 'true' }}
       run: |
         set +e
-        image_name="${{ inputs.image_name }}"
-        tags_raw="${{ inputs.tags }}"
-        tags=$(echo $tags_raw | tr -d ' ' | tr ',' ' ')
-        error=0
-        for tag in $tags; do
-          docker tag "$image_name:$tag" "docker.io/$image_name:$tag"
+        for TAG in $(echo $TAGS | tr '\n' ' '); do
+          TAGS_ARGS="$TAGS_ARGS -t docker.io/$IMAGE_NAME:$TAG"
         done
-        for tag in $tags; do
-          echo "Pushing docker.io/$image_name:$tag"
-          docker push "docker.io/$image_name:$tag" || error=1
-        done
-        if [ $error -ne 0 ]; then
-          echo "Warning: Some pushes to Docker Hub failed."
+        echo "Building and pushing to Docker Hub..."
+        docker buildx build \
+          --platform linux/amd64,linux/arm64 \
+          $TAGS_ARGS \
+          --push \
+          .
+        if [ $? -ne 0 ]; then
+          echo "Warning: Docker Hub push failed."
         fi
       shell: bash
 
-    - name: Push to GitHub Container Registry
+    - name: Build & push to GitHub Container Registry
       if: ${{ inputs.push_ghcr == 'true' }}
       run: |
         set +e
-        image_name="${{ inputs.image_name }}"
-        tags_raw="${{ inputs.tags }}"
-        tags=$(echo $tags_raw | tr -d ' ' | tr ',' ' ')
-        error=0
-        for tag in $tags; do
-          docker tag "$image_name:$tag" "ghcr.io/${{ github.repository_owner }}/$image_name:$tag"
+        for TAG in $(echo $TAGS | tr '\n' ' '); do
+          TAGS_ARGS="$TAGS_ARGS -t ghcr.io/${{ github.repository_owner }}/$IMAGE_NAME:$TAG"
         done
-        for tag in $tags; do
-          echo "Pushing ghcr.io/${{ github.repository_owner }}/$image_name:$tag"
-          docker push "ghcr.io/${{ github.repository_owner }}/$image_name:$tag" || error=1
-        done
-        if [ $error -ne 0 ]; then
-          echo "Warning: Some pushes to GHCR failed."
+        echo "Building and pushing to GHCR..."
+        docker buildx build \
+          --platform linux/amd64,linux/arm64 \
+          $TAGS_ARGS \
+          --push \
+          .
+        if [ $? -ne 0 ]; then
+          echo "Warning: GHCR push failed."
         fi
       shell: bash
 
-    - name: Push to Quay.io
+    - name: Build & push to Quay.io
       if: ${{ inputs.push_quay == 'true' }}
       run: |
         set +e
-        image_name="${{ inputs.image_name }}"
-        tags_raw="${{ inputs.tags }}"
-        tags=$(echo $tags_raw | tr -d ' ' | tr ',' ' ')
-        error=0
-        for tag in $tags; do
-          docker tag "$image_name:$tag" "quay.io/$image_name:$tag"
+        for TAG in $(echo $TAGS | tr '\n' ' '); do
+          TAGS_ARGS="$TAGS_ARGS -t quay.io/$IMAGE_NAME:$TAG"
         done
-        for tag in $tags; do
-          echo "Pushing quay.io/$image_name:$tag"
-          docker push "quay.io/$image_name:$tag" || error=1
-        done
-        if [ $error -ne 0 ]; then
-          echo "Warning: Some pushes to Quay.io failed."
+        echo "Building and pushing to Quay.io..."
+        docker buildx build \
+          --platform linux/amd64,linux/arm64 \
+          $TAGS_ARGS \
+          --push \
+          .
+        if [ $? -ne 0 ]; then
+          echo "Warning: Quay.io push failed."
         fi
       shell: bash
