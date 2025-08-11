@@ -39,18 +39,18 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Parse tags
-        id: tags
+      - name: Normalize tags
+        id: vars
         run: |
           TAGS_INPUT="${{ github.event.inputs.tags }}"
           IFS=',' read -ra TAGS_ARRAY <<< "$TAGS_INPUT"
-          for i in "${TAGS_ARRAY[@]}"; do
-            CLEAN_TAG="$(echo "$i" | xargs)" # trim spaces
-            echo "tag=$CLEAN_TAG" >> "$GITHUB_OUTPUT"
-            echo "tags_list=${tags_list} $CLEAN_TAG" >> "$GITHUB_OUTPUT"
+          CLEAN_TAGS=()
+          for t in "${TAGS_ARRAY[@]}"; do
+            CLEAN_TAGS+=("$(echo "$t" | xargs)")
           done
+          echo "tags_list=${CLEAN_TAGS[*]}" >> "$GITHUB_OUTPUT"
 
-      # Docker Hub login (optional)
+      # Login (optional per registry)
       - name: Login to Docker Hub
         if: ${{ github.event.inputs.push_dockerhub == 'true' }}
         uses: docker/login-action@v3
@@ -58,7 +58,6 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      # GHCR login (optional)
       - name: Login to GHCR
         if: ${{ github.event.inputs.push_ghcr == 'true' }}
         uses: docker/login-action@v3
@@ -67,7 +66,6 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GHCR_TOKEN }}
 
-      # Quay.io login (optional)
       - name: Login to Quay.io
         if: ${{ github.event.inputs.push_quay == 'true' }}
         uses: docker/login-action@v3
@@ -76,42 +74,45 @@ jobs:
           username: ${{ secrets.QUAY_USERNAME }}
           password: ${{ secrets.QUAY_TOKEN }}
 
+      # Build once and store in local cache
+      - name: Build multi-arch image
+        run: |
+          docker buildx build \
+            --platform linux/amd64,linux/arm64 \
+            --output=type=registry,dest=/tmp/buildcache.tar \
+            -t tempimage:build .
+        shell: bash
+
       # Push to Docker Hub
-      - name: Build & Push to Docker Hub
+      - name: Push to Docker Hub
         if: ${{ github.event.inputs.push_dockerhub == 'true' }}
         run: |
-          set -e
-          for tag in $(echo "${{ github.event.inputs.tags }}" | tr ',' ' '); do
-            docker buildx build \
-              --platform linux/amd64,linux/arm64 \
-              --push \
-              -t docker.io/${{ secrets.DOCKERHUB_USERNAME }}/$(basename $GITHUB_REPOSITORY):$(echo "$tag" | xargs) .
+          docker load < /tmp/buildcache.tar || true
+          for tag in ${{ steps.vars.outputs.tags_list }}; do
+            docker tag tempimage:build docker.io/${{ secrets.DOCKERHUB_USERNAME }}/$(basename $GITHUB_REPOSITORY):$tag
+            docker push docker.io/${{ secrets.DOCKERHUB_USERNAME }}/$(basename $GITHUB_REPOSITORY):$tag || echo "Docker Hub push failed for tag $tag"
           done
         continue-on-error: true
 
       # Push to GHCR
-      - name: Build & Push to GHCR
+      - name: Push to GHCR
         if: ${{ github.event.inputs.push_ghcr == 'true' }}
         run: |
-          set -e
+          docker load < /tmp/buildcache.tar || true
           REPO_NAME=$(echo "${GITHUB_REPOSITORY}" | tr '[:upper:]' '[:lower:]')
-          for tag in $(echo "${{ github.event.inputs.tags }}" | tr ',' ' '); do
-            docker buildx build \
-              --platform linux/amd64,linux/arm64 \
-              --push \
-              -t ghcr.io/${REPO_NAME}:$(echo "$tag" | xargs) .
+          for tag in ${{ steps.vars.outputs.tags_list }}; do
+            docker tag tempimage:build ghcr.io/$REPO_NAME:$tag
+            docker push ghcr.io/$REPO_NAME:$tag || echo "GHCR push failed for tag $tag"
           done
         continue-on-error: true
 
       # Push to Quay.io
-      - name: Build & Push to Quay.io
+      - name: Push to Quay.io
         if: ${{ github.event.inputs.push_quay == 'true' }}
         run: |
-          set -e
-          for tag in $(echo "${{ github.event.inputs.tags }}" | tr ',' ' '); do
-            docker buildx build \
-              --platform linux/amd64,linux/arm64 \
-              --push \
-              -t quay.io/${{ secrets.QUAY_USERNAME }}/$(basename $GITHUB_REPOSITORY):$(echo "$tag" | xargs) .
+          docker load < /tmp/buildcache.tar || true
+          for tag in ${{ steps.vars.outputs.tags_list }}; do
+            docker tag tempimage:build quay.io/${{ secrets.QUAY_USERNAME }}/$(basename $GITHUB_REPOSITORY):$tag
+            docker push quay.io/${{ secrets.QUAY_USERNAME }}/$(basename $GITHUB_REPOSITORY):$tag || echo "Quay push failed for tag $tag"
           done
         continue-on-error: true
