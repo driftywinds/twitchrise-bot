@@ -160,9 +160,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     log(f"User {username} ({chat_id}) started the bot.")
     await update.message.reply_text(
         "👋 Welcome to the Twitchrise bot for Telegram!\n\n" 
-        "Use /add <channel> to watch a Twitch streamer.\n"
-        "Use /remove <channel> to stop watching.\n"
-        "Use /list to see your watchlist.\n"
+        "Use /add <channel> to monitor a Twitch channel.\n"
+        "Use /remove <channel> to stop monitoring the channel.\n"
+        "Use /list to see your monitor list.\n"
         "Use /setapprise <url> to add extra notification targets.\n"
         "Use /rmapprise <number> to remove already added notification targets.\n"
         "Use /listapprise to list all added notification targets.\n\n"
