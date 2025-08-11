@@ -1,27 +1,28 @@
-name: Build and Push Multi-Arch Docker Images
+name: Multi-Architecture Docker Build
 
 on:
   workflow_dispatch:
     inputs:
       image_name:
-        description: 'Docker image name (e.g. user/image)'
+        description: 'Docker image name (e.g., user/image)'
         required: true
         type: string
-      tags:
-        description: 'Comma-separated tags (e.g. v1.01,latest,dev,beta)'
+      image_tag:
+        description: 'Docker image tag (e.g., latest, v1.1.0)'
         required: true
         type: string
-      push_dockerhub:
+        default: 'latest'
+      push_to_dockerhub:
         description: 'Push to Docker Hub'
         required: false
         type: boolean
         default: true
-      push_ghcr:
+      push_to_ghcr:
         description: 'Push to GitHub Container Registry'
         required: false
         type: boolean
         default: true
-      push_quay:
+      push_to_quay:
         description: 'Push to Quay.io'
         required: false
         type: boolean
@@ -30,100 +31,139 @@ on:
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
-
+    
     steps:
     - name: Checkout repository
-      uses: actions/checkout@v3
-
+      uses: actions/checkout@v4
+      
     - name: Set up Docker Buildx
-      uses: docker/setup-buildx-action@v2
-
-    - name: Log in to Docker Hub
-      if: ${{ inputs.push_dockerhub == 'true' }}
-      uses: docker/login-action@v2
+      uses: docker/setup-buildx-action@v3
+      
+    - name: Login to Docker Hub
+      if: ${{ inputs.push_to_dockerhub }}
+      uses: docker/login-action@v3
       with:
-        registry: docker.io
-        username: ${{ github.actor }}
+        username: ${{ vars.DOCKERHUB_USERNAME || github.actor }}
         password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-    - name: Log in to GitHub Container Registry
-      if: ${{ inputs.push_ghcr == 'true' }}
-      uses: docker/login-action@v2
+      continue-on-error: true
+      id: dockerhub-login
+      
+    - name: Login to GitHub Container Registry
+      if: ${{ inputs.push_to_ghcr }}
+      uses: docker/login-action@v3
       with:
         registry: ghcr.io
         username: ${{ github.actor }}
         password: ${{ secrets.GHCR_TOKEN }}
-
-    - name: Log in to Quay.io
-      if: ${{ inputs.push_quay == 'true' }}
-      uses: docker/login-action@v2
+      continue-on-error: true
+      id: ghcr-login
+      
+    - name: Login to Quay.io
+      if: ${{ inputs.push_to_quay }}
+      uses: docker/login-action@v3
       with:
         registry: quay.io
         username: ${{ secrets.QUAY_USERNAME }}
         password: ${{ secrets.QUAY_PASSWORD }}
-
-    - name: Prepare tags
-      id: prepare_tags
+      continue-on-error: true
+      id: quay-login
+      
+    - name: Extract metadata
+      id: meta
+      uses: docker/metadata-action@v5
+      with:
+        images: |
+          name=${{ inputs.image_name }},enable=${{ inputs.push_to_dockerhub && steps.dockerhub-login.outcome == 'success' }}
+          name=ghcr.io/${{ inputs.image_name }},enable=${{ inputs.push_to_ghcr && steps.ghcr-login.outcome == 'success' }}
+          name=quay.io/${{ inputs.image_name }},enable=${{ inputs.push_to_quay && steps.quay-login.outcome == 'success' }}
+        tags: |
+          type=raw,value=${{ inputs.image_tag }}
+          
+    - name: Build and push Docker image
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        file: ./Dockerfile
+        platforms: linux/amd64,linux/arm64
+        push: true
+        tags: ${{ steps.meta.outputs.tags }}
+        labels: ${{ steps.meta.outputs.labels }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+      continue-on-error: false
+      
+    - name: Push to Docker Hub (fallback)
+      if: ${{ inputs.push_to_dockerhub && steps.dockerhub-login.outcome == 'success' && failure() }}
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        file: ./Dockerfile
+        platforms: linux/amd64,linux/arm64
+        push: true
+        tags: ${{ inputs.image_name }}:${{ inputs.image_tag }}
+        labels: ${{ steps.meta.outputs.labels }}
+      continue-on-error: true
+      
+    - name: Push to GHCR (fallback)
+      if: ${{ inputs.push_to_ghcr && steps.ghcr-login.outcome == 'success' && failure() }}
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        file: ./Dockerfile
+        platforms: linux/amd64,linux/arm64
+        push: true
+        tags: ghcr.io/${{ inputs.image_name }}:${{ inputs.image_tag }}
+        labels: ${{ steps.meta.outputs.labels }}
+      continue-on-error: true
+      
+    - name: Push to Quay.io (fallback)
+      if: ${{ inputs.push_to_quay && steps.quay-login.outcome == 'success' && failure() }}
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        file: ./Dockerfile
+        platforms: linux/amd64,linux/arm64
+        push: true
+        tags: quay.io/${{ inputs.image_name }}:${{ inputs.image_tag }}
+        labels: ${{ steps.meta.outputs.labels }}
+      continue-on-error: true
+      
+    - name: Build Summary
+      if: always()
       run: |
-        echo "IMAGE_NAME=${{ inputs.image_name }}" >> $GITHUB_ENV
-        # Normalize tags: remove spaces and split by comma
-        TAGS_RAW="${{ inputs.tags }}"
-        TAGS=$(echo "$TAGS_RAW" | tr -d ' ' | tr ',' '\n')
-        echo "TAGS=$TAGS_RAW" >> $GITHUB_ENV
-        echo "TAGS_LIST<<EOF" >> $GITHUB_ENV
-        echo "$TAGS" >> $GITHUB_ENV
-        echo "EOF" >> $GITHUB_ENV
-
-    - name: Build & push to Docker Hub
-      if: ${{ inputs.push_dockerhub == 'true' }}
-      run: |
-        set +e
-        for TAG in $(echo $TAGS | tr '\n' ' '); do
-          TAGS_ARGS="$TAGS_ARGS -t docker.io/$IMAGE_NAME:$TAG"
-        done
-        echo "Building and pushing to Docker Hub..."
-        docker buildx build \
-          --platform linux/amd64,linux/arm64 \
-          $TAGS_ARGS \
-          --push \
-          .
-        if [ $? -ne 0 ]; then
-          echo "Warning: Docker Hub push failed."
+        echo "## Build Summary" >> $GITHUB_STEP_SUMMARY
+        echo "**Image Name:** ${{ inputs.image_name }}" >> $GITHUB_STEP_SUMMARY
+        echo "**Image Tag:** ${{ inputs.image_tag }}" >> $GITHUB_STEP_SUMMARY
+        echo "**Platforms:** linux/amd64, linux/arm64" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### Registry Push Status:" >> $GITHUB_STEP_SUMMARY
+        
+        if [[ "${{ inputs.push_to_dockerhub }}" == "true" ]]; then
+          if [[ "${{ steps.dockerhub-login.outcome }}" == "success" ]]; then
+            echo "- ✅ Docker Hub: Attempted" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "- ❌ Docker Hub: Login failed" >> $GITHUB_STEP_SUMMARY
+          fi
+        else
+          echo "- ⏭️ Docker Hub: Skipped" >> $GITHUB_STEP_SUMMARY
         fi
-      shell: bash
-
-    - name: Build & push to GitHub Container Registry
-      if: ${{ inputs.push_ghcr == 'true' }}
-      run: |
-        set +e
-        for TAG in $(echo $TAGS | tr '\n' ' '); do
-          TAGS_ARGS="$TAGS_ARGS -t ghcr.io/${{ github.repository_owner }}/$IMAGE_NAME:$TAG"
-        done
-        echo "Building and pushing to GHCR..."
-        docker buildx build \
-          --platform linux/amd64,linux/arm64 \
-          $TAGS_ARGS \
-          --push \
-          .
-        if [ $? -ne 0 ]; then
-          echo "Warning: GHCR push failed."
+        
+        if [[ "${{ inputs.push_to_ghcr }}" == "true" ]]; then
+          if [[ "${{ steps.ghcr-login.outcome }}" == "success" ]]; then
+            echo "- ✅ GHCR: Attempted" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "- ❌ GHCR: Login failed" >> $GITHUB_STEP_SUMMARY
+          fi
+        else
+          echo "- ⏭️ GHCR: Skipped" >> $GITHUB_STEP_SUMMARY
         fi
-      shell: bash
-
-    - name: Build & push to Quay.io
-      if: ${{ inputs.push_quay == 'true' }}
-      run: |
-        set +e
-        for TAG in $(echo $TAGS | tr '\n' ' '); do
-          TAGS_ARGS="$TAGS_ARGS -t quay.io/$IMAGE_NAME:$TAG"
-        done
-        echo "Building and pushing to Quay.io..."
-        docker buildx build \
-          --platform linux/amd64,linux/arm64 \
-          $TAGS_ARGS \
-          --push \
-          .
-        if [ $? -ne 0 ]; then
-          echo "Warning: Quay.io push failed."
+        
+        if [[ "${{ inputs.push_to_quay }}" == "true" ]]; then
+          if [[ "${{ steps.quay-login.outcome }}" == "success" ]]; then
+            echo "- ✅ Quay.io: Attempted" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "- ❌ Quay.io: Login failed" >> $GITHUB_STEP_SUMMARY
+          fi
+        else
+          echo "- ⏭️ Quay.io: Skipped" >> $GITHUB_STEP_SUMMARY
         fi
-      shell: bash
