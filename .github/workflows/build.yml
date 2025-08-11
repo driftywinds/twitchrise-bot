@@ -1,117 +1,153 @@
-name: Multi-Arch Docker Build & Push
+name: Build and Push Multi-Arch Docker Images
 
 on:
   workflow_dispatch:
     inputs:
       image_name:
-        description: "Image name without registry (e.g. myuser/myimage)"
+        description: 'Docker image name (e.g. user/image)'
         required: true
         type: string
       tags:
-        description: "Comma-separated list of tags (e.g. v1.0.1,latest,dev,beta)"
+        description: 'Comma-separated tags (e.g. v1.01,latest,dev,beta)'
         required: true
         type: string
       push_dockerhub:
-        description: "Push to Docker Hub"
-        required: true
+        description: 'Push to Docker Hub'
+        required: false
         type: boolean
-        default: false
+        default: true
       push_ghcr:
-        description: "Push to GitHub Container Registry"
-        required: true
+        description: 'Push to GitHub Container Registry'
+        required: false
         type: boolean
-        default: false
+        default: true
       push_quay:
-        description: "Push to Quay.io"
-        required: true
+        description: 'Push to Quay.io'
+        required: false
         type: boolean
         default: false
 
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+    - name: Checkout repository
+      uses: actions/checkout@v3
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v2
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+    - name: Log in to Docker Hub
+      if: ${{ inputs.push_dockerhub == 'true' }}
+      uses: docker/login-action@v2
+      with:
+        registry: docker.io
+        username: ${{ github.actor }}
+        password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Normalize tags
-        id: vars
-        run: |
-          TAGS_INPUT="${{ github.event.inputs.tags }}"
-          IFS=',' read -ra TAGS_ARRAY <<< "$TAGS_INPUT"
-          CLEAN_TAGS=()
-          for t in "${TAGS_ARRAY[@]}"; do
-            CLEAN_TAGS+=("$(echo "$t" | xargs)")
-          done
-          echo "tags_list=${CLEAN_TAGS[*]}" >> "$GITHUB_OUTPUT"
+    - name: Log in to GitHub Container Registry
+      if: ${{ inputs.push_ghcr == 'true' }}
+      uses: docker/login-action@v2
+      with:
+        registry: ghcr.io
+        username: ${{ github.actor }}
+        password: ${{ secrets.GHCR_TOKEN }}
 
-      # Logins
-      - name: Login to Docker Hub
-        if: ${{ github.event.inputs.push_dockerhub == 'true' }}
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+    - name: Log in to Quay.io
+      if: ${{ inputs.push_quay == 'true' }}
+      uses: docker/login-action@v2
+      with:
+        registry: quay.io
+        username: ${{ secrets.QUAY_USERNAME }}
+        password: ${{ secrets.QUAY_PASSWORD }}
 
-      - name: Login to GHCR
-        if: ${{ github.event.inputs.push_ghcr == 'true' }}
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GHCR_TOKEN }}
+    - name: Prepare tags
+      id: prepare_tags
+      run: |
+        I="${{ inputs.image_name }}"
+        # Remove spaces from tags and split by comma
+        TAGS_RAW="${{ inputs.tags }}"
+        TAGS=$(echo $TAGS_RAW | tr -d ' ' | tr ',' '\n')
+        echo "image_name=$I" >> $GITHUB_OUTPUT
+        echo "tags=$TAGS_RAW" >> $GITHUB_OUTPUT
+        echo "::set-output name=tags_list::$TAGS_RAW"
+        echo "tag_array<<EOF" >> $GITHUB_OUTPUT
+        echo "$TAGS" >> $GITHUB_OUTPUT
+        echo "EOF" >> $GITHUB_OUTPUT
 
-      - name: Login to Quay.io
-        if: ${{ github.event.inputs.push_quay == 'true' }}
-        uses: docker/login-action@v3
-        with:
-          registry: quay.io
-          username: ${{ secrets.QUAY_USERNAME }}
-          password: ${{ secrets.QUAY_TOKEN }}
+    - name: Build Docker image (multi-arch)
+      id: build_image
+      run: |
+        set -e
+        image_name="${{ inputs.image_name }}"
+        tags_raw="${{ inputs.tags }}"
+        tags=$(echo $tags_raw | tr -d ' ' | tr ',' ' ')
+        
+        # Build with all tags on local docker cache (no push)
+        # Use buildx to build for linux/amd64,linux/arm64
+        docker buildx build \
+          --platform linux/amd64,linux/arm64 \
+          --load \
+          $(for t in $tags; do echo "-t $image_name:$t "; done) \
+          .
+      shell: bash
 
-      # Build once and save to local cache
-      - name: Build multi-arch image
-        run: |
-          docker buildx build \
-            --platform linux/amd64,linux/arm64 \
-            --output=type=docker \
-            -t tempimage:build .
+    - name: Push to Docker Hub
+      if: ${{ inputs.push_dockerhub == 'true' }}
+      run: |
+        set +e
+        image_name="${{ inputs.image_name }}"
+        tags_raw="${{ inputs.tags }}"
+        tags=$(echo $tags_raw | tr -d ' ' | tr ',' ' ')
+        error=0
+        for tag in $tags; do
+          docker tag "$image_name:$tag" "docker.io/$image_name:$tag"
+        done
+        for tag in $tags; do
+          echo "Pushing docker.io/$image_name:$tag"
+          docker push "docker.io/$image_name:$tag" || error=1
+        done
+        if [ $error -ne 0 ]; then
+          echo "Warning: Some pushes to Docker Hub failed."
+        fi
+      shell: bash
 
-      # Push to Docker Hub
-      - name: Push to Docker Hub
-        if: ${{ github.event.inputs.push_dockerhub == 'true' }}
-        run: |
-          for tag in ${{ steps.vars.outputs.tags_list }}; do
-            docker tag tempimage:build docker.io/${{ github.event.inputs.image_name }}:$tag
-            docker push docker.io/${{ github.event.inputs.image_name }}:$tag || echo "Docker Hub push failed for tag $tag"
-          done
-        continue-on-error: true
+    - name: Push to GitHub Container Registry
+      if: ${{ inputs.push_ghcr == 'true' }}
+      run: |
+        set +e
+        image_name="${{ inputs.image_name }}"
+        tags_raw="${{ inputs.tags }}"
+        tags=$(echo $tags_raw | tr -d ' ' | tr ',' ' ')
+        error=0
+        for tag in $tags; do
+          docker tag "$image_name:$tag" "ghcr.io/${{ github.repository_owner }}/$image_name:$tag"
+        done
+        for tag in $tags; do
+          echo "Pushing ghcr.io/${{ github.repository_owner }}/$image_name:$tag"
+          docker push "ghcr.io/${{ github.repository_owner }}/$image_name:$tag" || error=1
+        done
+        if [ $error -ne 0 ]; then
+          echo "Warning: Some pushes to GHCR failed."
+        fi
+      shell: bash
 
-      # Push to GHCR
-      - name: Push to GHCR
-        if: ${{ github.event.inputs.push_ghcr == 'true' }}
-        run: |
-          for tag in ${{ steps.vars.outputs.tags_list }}; do
-            docker tag tempimage:build ghcr.io/${{ github.event.inputs.image_name }}:$tag
-            docker push ghcr.io/${{ github.event.inputs.image_name }}:$tag || echo "GHCR push failed for tag $tag"
-          done
-        continue-on-error: true
-
-      # Push to Quay.io
-      - name: Push to Quay.io
-        if: ${{ github.event.inputs.push_quay == 'true' }}
-        run: |
-          for tag in ${{ steps.vars.outputs.tags_list }}; do
-            docker tag tempimage:build quay.io/${{ github.event.inputs.image_name }}:$tag
-            docker push quay.io/${{ github.event.inputs.image_name }}:$tag || echo "Quay push failed for tag $tag"
-          done
-        continue-on-error: true
+    - name: Push to Quay.io
+      if: ${{ inputs.push_quay == 'true' }}
+      run: |
+        set +e
+        image_name="${{ inputs.image_name }}"
+        tags_raw="${{ inputs.tags }}"
+        tags=$(echo $tags_raw | tr -d ' ' | tr ',' ' ')
+        error=0
+        for tag in $tags; do
+          docker tag "$image_name:$tag" "quay.io/$image_name:$tag"
+        done
+        for tag in $tags; do
+          echo "Pushing quay.io/$image_name:$tag"
+          docker push "quay.io/$image_name:$tag" || error=1
+        done
+        if [ $error -ne 0 ]; then
+          echo "Warning: Some pushes to Quay.io failed."
+        fi
+      shell: bash
