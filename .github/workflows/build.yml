@@ -7,8 +7,8 @@ on:
         description: 'Docker image name (e.g., user/image)'
         required: true
         type: string
-      image_tag:
-        description: 'Docker image tag (e.g., latest, v1.1.0)'
+      image_tags:
+        description: 'Docker image tags (comma-separated, e.g., latest,v1.1.0,stable)'
         required: true
         type: string
         default: 'latest'
@@ -68,7 +68,150 @@ jobs:
       continue-on-error: true
       id: quay-login
       
+    - name: Process tags
+      id: process-tags
+      run: |
+        # Convert comma-separated tags to newline format for docker/metadata-action
+        TAGS_INPUT="${{ inputs.image_tags }}"
+        PROCESSED_TAGS=""
+        
+        IFS=',' read -ra TAG_ARRAY <<< "$TAGS_INPUT"
+        for tag in "${TAG_ARRAY[@]}"; do
+          # Trim whitespace
+          tag=$(echo "$tag" | xargs)
+          if [ ! -z "$tag" ]; then
+            PROCESSED_TAGS="${PROCESSED_TAGS}type=raw,value=${tag}"
     - name: Extract metadata
+      id: meta
+      uses: docker/metadata-action@v5
+      with:
+        images: |
+          name=${{ inputs.image_name }},enable=${{ inputs.push_to_dockerhub && steps.dockerhub-login.outcome == 'success' }}
+          name=ghcr.io/${{ inputs.image_name }},enable=${{ inputs.push_to_ghcr && steps.ghcr-login.outcome == 'success' }}
+          name=quay.io/${{ inputs.image_name }},enable=${{ inputs.push_to_quay && steps.quay-login.outcome == 'success' }}
+        tags: |
+          ${{ steps.process-tags.outputs.tags }}
+          
+    - name: Build and push Docker image
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        file: ./Dockerfile
+        platforms: linux/amd64,linux/arm64
+        push: true
+        tags: ${{ steps.meta.outputs.tags }}
+        labels: ${{ steps.meta.outputs.labels }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+      continue-on-error: false
+      
+    - name: Push to Docker Hub (fallback)
+      if: ${{ inputs.push_to_dockerhub && steps.dockerhub-login.outcome == 'success' && failure() }}
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        file: ./Dockerfile
+        platforms: linux/amd64,linux/arm64
+        push: true
+        tags: ${{ steps.process-tags.outputs.dockerhub_tags }}
+        labels: ${{ steps.meta.outputs.labels }}
+      continue-on-error: true
+      
+    - name: Push to GHCR (fallback)
+      if: ${{ inputs.push_to_ghcr && steps.ghcr-login.outcome == 'success' && failure() }}
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        file: ./Dockerfile
+        platforms: linux/amd64,linux/arm64
+        push: true
+        tags: ${{ steps.process-tags.outputs.ghcr_tags }}
+        labels: ${{ steps.meta.outputs.labels }}
+      continue-on-error: true
+      
+    - name: Push to Quay.io (fallback)
+      if: ${{ inputs.push_to_quay && steps.quay-login.outcome == 'success' && failure() }}
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        file: ./Dockerfile
+        platforms: linux/amd64,linux/arm64
+        push: true
+        tags: ${{ steps.process-tags.outputs.quay_tags }}
+        labels: ${{ steps.meta.outputs.labels }}
+      continue-on-error: true
+      
+    - name: Build Summary
+      if: always()
+      run: |
+        echo "## Build Summary" >> $GITHUB_STEP_SUMMARY
+        echo "**Image Name:** ${{ inputs.image_name }}" >> $GITHUB_STEP_SUMMARY
+        echo "**Image Tags:** ${{ inputs.image_tags }}" >> $GITHUB_STEP_SUMMARY
+        echo "**Platforms:** linux/amd64, linux/arm64" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### Registry Push Status:" >> $GITHUB_STEP_SUMMARY
+        
+        if [[ "${{ inputs.push_to_dockerhub }}" == "true" ]]; then
+          if [[ "${{ steps.dockerhub-login.outcome }}" == "success" ]]; then
+            echo "- ✅ Docker Hub: Attempted" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "- ❌ Docker Hub: Login failed" >> $GITHUB_STEP_SUMMARY
+          fi
+        else
+          echo "- ⏭️ Docker Hub: Skipped" >> $GITHUB_STEP_SUMMARY
+        fi
+        
+        if [[ "${{ inputs.push_to_ghcr }}" == "true" ]]; then
+          if [[ "${{ steps.ghcr-login.outcome }}" == "success" ]]; then
+            echo "- ✅ GHCR: Attempted" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "- ❌ GHCR: Login failed" >> $GITHUB_STEP_SUMMARY
+          fi
+        else
+          echo "- ⏭️ GHCR: Skipped" >> $GITHUB_STEP_SUMMARY
+        fi
+        
+        if [[ "${{ inputs.push_to_quay }}" == "true" ]]; then
+          if [[ "${{ steps.quay-login.outcome }}" == "success" ]]; then
+            echo "- ✅ Quay.io: Attempted" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "- ❌ Quay.io: Login failed" >> $GITHUB_STEP_SUMMARY
+          fi
+        else
+          echo "- ⏭️ Quay.io: Skipped" >> $GITHUB_STEP_SUMMARY
+        fi\n'
+          fi
+        done
+        
+        # Remove trailing newline
+        PROCESSED_TAGS=$(echo "$PROCESSED_TAGS" | sed '$d')
+        
+        echo "tags<<EOF" >> $GITHUB_OUTPUT
+        echo "$PROCESSED_TAGS" >> $GITHUB_OUTPUT
+        echo "EOF" >> $GITHUB_OUTPUT
+        
+        # Also create individual tag lists for fallback steps
+        DOCKERHUB_TAGS=""
+        GHCR_TAGS=""
+        QUAY_TAGS=""
+        
+        for tag in "${TAG_ARRAY[@]}"; do
+          tag=$(echo "$tag" | xargs)
+          if [ ! -z "$tag" ]; then
+            [ ! -z "$DOCKERHUB_TAGS" ] && DOCKERHUB_TAGS="${DOCKERHUB_TAGS},"
+            DOCKERHUB_TAGS="${DOCKERHUB_TAGS}${{ inputs.image_name }}:${tag}"
+            
+            [ ! -z "$GHCR_TAGS" ] && GHCR_TAGS="${GHCR_TAGS},"
+            GHCR_TAGS="${GHCR_TAGS}ghcr.io/${{ inputs.image_name }}:${tag}"
+            
+            [ ! -z "$QUAY_TAGS" ] && QUAY_TAGS="${QUAY_TAGS},"
+            QUAY_TAGS="${QUAY_TAGS}quay.io/${{ inputs.image_name }}:${tag}"
+          fi
+        done
+        
+        echo "dockerhub_tags=$DOCKERHUB_TAGS" >> $GITHUB_OUTPUT
+        echo "ghcr_tags=$GHCR_TAGS" >> $GITHUB_OUTPUT
+        echo "quay_tags=$QUAY_TAGS" >> $GITHUB_OUTPUT
       id: meta
       uses: docker/metadata-action@v5
       with:
