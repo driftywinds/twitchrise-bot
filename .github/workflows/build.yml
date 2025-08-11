@@ -1,10 +1,10 @@
-name: Multi-Arch Docker Build & Push
+name: Multi-Arch Docker Build & Push (debuggable)
 
 on:
   workflow_dispatch:
     inputs:
       image_name:
-        description: "Base image name (without registry). Example: myuser/myimage"
+        description: "Base image name (e.g. myuser/myimage or repo/image)."
         required: true
       tags:
         description: "Image tags (comma or space separated). Example: v1.01 latest beta"
@@ -38,24 +38,74 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Parse tags
-        id: tags
+      - name: Parse tags and compute full image names
+        id: tagger
+        env:
+          TAGS_INPUT: ${{ github.event.inputs.tags }}
+          IMAGE_NAME: ${{ github.event.inputs.image_name }}
+          DOCKERHUB_USER: ${{ github.event.inputs.dockerhub_user }}
+          PUSH_DOCKERHUB: ${{ github.event.inputs.push_to_dockerhub }}
+          PUSH_GHCR: ${{ github.event.inputs.push_to_ghcr }}
+          PUSH_QUAY: ${{ github.event.inputs.push_to_quay }}
+          GITHUB_REPOSITORY_OWNER: ${{ github.repository_owner }}
         run: |
-          TAGS_INPUT="${{ github.event.inputs.tags }}"
-          TAGS_INPUT=$(echo "$TAGS_INPUT" | tr ',' ' ')
+          set -eu
+
+          # normalize commas to spaces
+          TAGS_INPUT=$(echo "${TAGS_INPUT:-}" | tr ',' ' ')
+
           TAG_ARGS=""
+          PRINT_LIST=""
+
           for TAG in $TAGS_INPUT; do
-            if [ "${{ github.event.inputs.push_to_dockerhub }}" == "true" ]; then
-              TAG_ARGS="$TAG_ARGS --tag docker.io/${{ github.event.inputs.dockerhub_user }}/${{ github.event.inputs.image_name }}:$TAG"
+            # Docker Hub
+            if [ "${PUSH_DOCKERHUB}" = "true" ]; then
+              if [ -n "${DOCKERHUB_USER}" ]; then
+                FULL_TAG="docker.io/${DOCKERHUB_USER}/${IMAGE_NAME}:$TAG"
+              else
+                FULL_TAG="docker.io/${IMAGE_NAME}:$TAG"
+              fi
+              TAG_ARGS="${TAG_ARGS} --tag ${FULL_TAG}"
+              PRINT_LIST="${PRINT_LIST}${FULL_TAG} "
             fi
-            if [ "${{ github.event.inputs.push_to_ghcr }}" == "true" ]; then
-              TAG_ARGS="$TAG_ARGS --tag ghcr.io/${{ github.repository_owner }}/${{ github.event.inputs.image_name }}:$TAG"
+
+            # GHCR (use repo owner namespace)
+            if [ "${PUSH_GHCR}" = "true" ]; then
+              FULL_TAG="ghcr.io/${GITHUB_REPOSITORY_OWNER}/${IMAGE_NAME}:$TAG"
+              TAG_ARGS="${TAG_ARGS} --tag ${FULL_TAG}"
+              PRINT_LIST="${PRINT_LIST}${FULL_TAG} "
             fi
-            if [ "${{ github.event.inputs.push_to_quay }}" == "true" ]; then
-              TAG_ARGS="$TAG_ARGS --tag quay.io/${{ github.event.inputs.image_name }}:$TAG"
+
+            # Quay
+            if [ "${PUSH_QUAY}" = "true" ]; then
+              # If you want an org prefix for quay, include it in IMAGE_NAME when running the workflow
+              FULL_TAG="quay.io/${IMAGE_NAME}:$TAG"
+              TAG_ARGS="${TAG_ARGS} --tag ${FULL_TAG}"
+              PRINT_LIST="${PRINT_LIST}${FULL_TAG} "
             fi
           done
-          echo "tags=$TAG_ARGS" >> $GITHUB_OUTPUT
+
+          # Export outputs for later steps
+          echo "tags=${TAG_ARGS}" >> "$GITHUB_OUTPUT"
+          echo "computed_tags=${PRINT_LIST}" >> "$GITHUB_OUTPUT"
+
+      - name: Show computed tags (action logs)
+        run: |
+          echo "----- Computed tag args (passed to docker buildx) -----"
+          echo "${{ steps.tagger.outputs.tags }}"
+          echo
+          echo "----- Computed full image names (human-readable) -----"
+          echo "${{ steps.tagger.outputs.computed_tags }}"
+          echo
+          echo "----- Full docker buildx command that will be executed -----"
+          echo docker buildx build --platform linux/amd64,linux/arm64 ${{ steps.tagger.outputs.tags }} --push -f Dockerfile .
+        shell: bash
+
+      - name: Fail early if no tags computed
+        if: ${{ steps.tagger.outputs.computed_tags == '' }}
+        run: |
+          echo "ERROR: No tags were computed for any registry. Check inputs (image_name, tags, and push_to_* flags)." >&2
+          exit 1
 
       - name: Log in to Docker Hub
         if: github.event.inputs.push_to_dockerhub == 'true'
@@ -82,9 +132,10 @@ jobs:
 
       - name: Build and Push Multi-Arch Image
         run: |
+          set -x
           docker buildx build \
             --platform linux/amd64,linux/arm64 \
-            ${{ steps.tags.outputs.tags }} \
+            ${{ steps.tagger.outputs.tags }} \
             --push \
             -f Dockerfile \
             .
